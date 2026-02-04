@@ -26,10 +26,12 @@ Process *runningProcess = NULL;         // The currently running process, aka th
 Queue readyLists[NUM_PRIORITIES];       // +1 to account for priority 0; index = priority
 int nextPid = 1;                        // Controls the id of the next created process
 int debugFlag = 1;                      // If set for console output, the text may not appear if debugging mode is off
+interrupt_handler_t* interruptVector;   // Table that contains interrupt information
 
 /* Provided functions */
 static int watchdog(char*);
 static inline void disableInterrupts();
+static inline void enableInterrupts();  // New function, placed here for organizational purposes
 void dispatcher();
 static int launch(void *);
 static void check_deadlock();
@@ -42,6 +44,8 @@ static int boolAvailableProcesses();
 static int isHighestPriorityProcess(Process* target);
 static Process* getHighestPriorityProcess();
 static void cleanUpChild(Process* target);
+static void addJoinedProc(Process* target);
+static void clock_handler(char* deviceName, uint8_t command, uint32_t status);
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -97,7 +101,8 @@ int bootstrap(void *pArgs)
     }
 
     /* Initialize the clock interrupt handler */
-
+    interruptVector = get_interrupt_handlers();
+    interruptVector[THREADS_TIMER_INTERRUPT] = clock_handler;
 
     /* startup a watchdog process */
     result = k_spawn("watchdog", watchdog, NULL, THREADS_MIN_STACK_SIZE, LOWEST_PRIORITY); // Will always be pid = 1
@@ -206,6 +211,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     pNewProc->stacksize = stacksize;
     pNewProc->status = READY;
     pNewProc->exitCode = 0;
+    pNewProc->signaled = 0;
 
     // Some processes don't have args, so we need to account for NULL
     if (arg != NULL)
@@ -275,12 +281,12 @@ static int launch(void *args)
     DebugConsole("launch(): started: %s\n", runningProcess->name);
 
     /* Enable interrupts */
-    set_psr(PSR_INTERRUPTS);
+    enableInterrupts();
 
     /* Call the function passed to spawn and capture its return value */
     result = runningProcess->entryPoint(runningProcess->startArgs);
 
-    DebugConsole("Process %d returned to launch\n", runningProcess->pid);
+    DebugConsole("Process %d returned to launch\n", k_getpid());
 
     /* Stop the process gracefully */
     k_exit(result);
@@ -330,8 +336,13 @@ int k_wait(int* code)
 
     child = runningProcess->pChildren; // Reset to head of children linked list
 
-    runningProcess->status = BLOCKED; // Block the parent and wait for control to be returned
+    block(BLOCKED); // Block the parent and wait for control to be returned
     dispatcher();
+
+    if (signaled()) // Signaled while waiting, return error code -5
+    {
+        return -5;
+    }
 
     while (child != NULL) // Find exited child
     {
@@ -373,15 +384,20 @@ void k_exit(int code)
     // If the process has a blocked parent, unblock it
     if (runningProcess->pParent != NULL && runningProcess->pParent->status == BLOCKED) 
     {
-        int index = runningProcess->pParent->priority;
-
-        runningProcess->pParent->status = READY;
-        push(&readyLists[index], runningProcess->pParent);
+        unblock(runningProcess->pParent->pid);
     }
     
     // Signal to parent that this process needs to be cleaned up
     runningProcess->status = QUIT;
-    runningProcess->exitCode = code;
+
+    if (signaled()) // Signaled while exiting, overwrite error code -5
+    {
+        runningProcess->exitCode = -5;
+    }
+    else
+    {
+        runningProcess->exitCode = code;
+    }
 
     // Surrender control and wait to be cleaned up
     dispatcher();
@@ -398,7 +414,35 @@ void k_exit(int code)
 *************************************************************************/
 int k_kill(int pid, int signal)
 {
-    int result = 0;
+    Process* target;
+
+    if (signal != SIG_TERM)
+    {
+        console_output(debugFlag, "k_kill(): Invalid signal code, closing program.\n");
+        stop(1);
+    }
+
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (processTable[i].pid == pid)
+        {
+            target = &processTable[i];
+            break;
+        }
+    }
+
+    if (target == NULL)
+    {
+        console_output(debugFlag, "k_kill(): Attempted to signal non-existant process, closing program.\n");
+        stop(1);
+    }
+
+    if (target->signaled)
+    {
+        return 1;
+    }
+    
+    target->signaled = 1;
     return 0;
 }
 
@@ -407,7 +451,7 @@ int k_kill(int pid, int signal)
 *************************************************************************/
 int k_getpid()
 {
-    return 0;
+    return runningProcess->pid;
 }
 
 /**************************************************************************
@@ -415,6 +459,40 @@ int k_getpid()
 ***************************************************************************/
 int k_join(int pid, int* pChildExitCode)
 {
+    // Input Validation
+    Process* target;
+
+    if (getpid() == pid)
+    {
+        console_output(debugFlag, "k_join(): Attempted to join process to itself, closing program.\n");
+        stop(1);
+    }
+
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (processTable[i].pid == pid)
+        {
+            target = &processTable[i];
+            break;
+        }
+    }
+
+    if (target == NULL)
+    {
+        console_output(debugFlag, "k_join(): Attempted to join process to a non-existant process, closing program.\n");
+        stop(1);
+    }
+
+    // Join Processes
+    addJoinedProc(target);
+    block(BLOCKED);
+    dispatcher();
+
+    if (signaled())
+    {
+        return -5;
+    }
+
     return 0;
 }
 
@@ -423,6 +501,28 @@ int k_join(int pid, int* pChildExitCode)
 *************************************************************************/
 int unblock(int pid)
 {
+    // Input validation
+    Process* target;
+
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (processTable[i].pid == pid)
+        {
+            target = &processTable[i];
+            break;
+        }
+    }
+
+    // This will need to be changed if there ends up being more than 1 BLOCKED status code
+    if (target == NULL || target->status != BLOCKED) 
+    {
+        return -1;
+    }
+
+    // Unblock Process
+    target->status = READY;
+    push(&readyLists[target->priority], target);
+
     return 0;
 }
 
@@ -431,6 +531,20 @@ int unblock(int pid)
 *************************************************************************/
 int block(int newStatus)
 {
+    if (newStatus > 10)
+    {
+        console_output(debugFlag, "block(): Blocking status code is NOT greater than 10, closing program.\n");
+        stop(1);
+    }
+
+    runningProcess->status = newStatus;
+    dispatcher();
+
+    if (signaled())
+    {
+        return -5;
+    }
+
     return 0;
 }
 
@@ -439,7 +553,7 @@ int block(int newStatus)
 *************************************************************************/
 int signaled()
 {
-    return 0;
+    return runningProcess->signaled;
 }
 /*************************************************************************
    Name - readtime
@@ -569,9 +683,22 @@ static inline void disableInterrupts()
 
     psr = psr & ~PSR_INTERRUPTS;
 
-    set_psr( psr);
+    set_psr(psr);
 
 } /* disableInterrupts */
+
+/*
+ * Enabless the interrupts.
+ */
+static inline void enableInterrupts()
+{
+    int psr = get_psr();
+
+    psr = psr & PSR_INTERRUPTS;
+
+    set_psr(psr);
+
+} /* enableInterrupts */
 
 /**************************************************************************
    Name - DebugConsole
@@ -802,4 +929,31 @@ static void cleanUpChild(Process* target)
             processTable[i] = blankProcess;
         }
     }
+}
+
+
+static void addJoinedProc(Process* target)
+{
+    // Add target to the current Process' list
+    Process* joinedPtr = runningProcess->pJoined;
+
+    if (joinedPtr == NULL)
+    {
+        joinedPtr = target;
+    }
+    else
+    {
+        while (joinedPtr->pJoined != NULL)
+        {
+            joinedPtr = joinedPtr->pJoined;
+        }
+
+        joinedPtr->pJoined = target;
+    }
+}
+
+
+static void clock_handler(char* deviceName, uint8_t command, uint32_t status)
+{
+
 }

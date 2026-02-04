@@ -6,10 +6,10 @@ Course: CYBV 489
 
 #pragma once
 
-#define READY 1		// Waiting to run
-#define QUIT 2		// Waiting to be cleaned up and removed
-#define BLOCKED 3	// Waiting for a child or joined process to finish running
-#define RUNNING 4	// Actively running; is the current running process
+#define READY 11		// Waiting to run
+#define QUIT 12			// Waiting to be cleaned up and removed
+#define BLOCKED 13		// Waiting for a child or joined process to finish running
+#define RUNNING 14		// Actively running; is the current running process
 
 /*
 Processes are the simulated processes created and used by the "Operating System" in the THREADS environment.
@@ -20,6 +20,7 @@ typedef struct _process
 	struct _process*		nextSiblingProcess;	// Points to the next child belonging to this process' parent
 	struct _process*		pParent;			// Points to this process' parent 
 	struct _process*        pChildren;			// Points to the head child in this process' children linked list
+	struct _process*		pJoined;			// Points to the head of the Joined processes linked list
 
 	char           name[MAXNAME];		// Process name 
 	char           startArgs[MAXARG];	// Process arguments 
@@ -31,6 +32,7 @@ typedef struct _process
 	unsigned int   stacksize;			// Size of the memory stack allocated to the process 
 	int            status;				// READY, QUIT, BLOCKED, etc. 
 	int			   exitCode;			// The code needed by k_wait() and is input into k_exit()
+	int			   signaled;			// 1 = TRUE, 0 = FALSE
 
 } Process;
 
