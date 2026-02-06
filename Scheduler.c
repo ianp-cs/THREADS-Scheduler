@@ -37,6 +37,7 @@ static int launch(void *);
 static void check_deadlock();
 static void DebugConsole(char* format, ...);
 void display_process_table();
+int getParentPid(int index);    // New function, placed here for organizational purposes
 char* getStatusStr(int index);  // New function, placed here for organizational purposes
 int getTotalCPUTime(int index); // New function, placed here for organizational purposes
 
@@ -425,7 +426,7 @@ void k_exit(int code)
 *************************************************************************/
 int k_kill(int pid, int signal)
 {
-    Process* target;
+    Process* target = NULL;
 
     if (signal != SIG_TERM)
     {
@@ -471,7 +472,7 @@ int k_getpid()
 int k_join(int pid, int* pChildExitCode)
 {
     // Input Validation
-    Process* target;
+    Process* target = NULL;
 
     if (getpid() == pid)
     {
@@ -513,7 +514,7 @@ int k_join(int pid, int* pChildExitCode)
 int unblock(int pid)
 {
     // Input validation
-    Process* target;
+    Process* target = NULL;
 
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
@@ -542,7 +543,7 @@ int unblock(int pid)
 *************************************************************************/
 int block(int newStatus)
 {
-    if (newStatus > 10)
+    if (newStatus < 10)
     {
         console_output(debugFlag, "block(): Blocking status code is NOT greater than 10, closing program.\n");
         stop(1);
@@ -577,7 +578,7 @@ int read_time()
 /*************************************************************************
    Name - readClock
 *************************************************************************/
-uint32_t read_clock()
+DWORD read_clock()
 {
     return system_clock();
 }
@@ -586,7 +587,7 @@ uint32_t read_clock()
 void display_process_table()
 {
 
-    console_output(debugFlag, "\nPID    Parent    Priority    Status        # Kids       CPUtime    Name\n");
+    console_output(debugFlag, "\nPID    Parent    Priority    Status        # Kids       CPUtime         Name\n");
     console_output(debugFlag, "-----------------------------------------------------------------------\n");
 
     for (int i = 0; i < MAX_PROCESSES; i++)
@@ -594,12 +595,25 @@ void display_process_table()
         if (processTable[i].pid > 0)
         {
             console_output(debugFlag, "%d     %d        %d          %s            %d           %d         %s\n",
-                processTable[i].pid, processTable[i].pParent->pid, processTable[i].priority, getStatusStr(i), 
+                processTable[i].pid, getParentPid(i), processTable[i].priority, getStatusStr(i),
                 processTable[i].numChildren, getTotalCPUTime(i), processTable[i].name);
         }
     }
 
     console_output(debugFlag, "\n");
+}
+
+
+int getParentPid(int index)
+{
+    if (processTable[index].pParent == NULL)
+    {
+        return -1;
+    }
+    else
+    {
+        return processTable[index].pParent->pid;
+    }
 }
 
 
@@ -625,6 +639,12 @@ char* getStatusStr(int index)
     {
         return "ERROR";
     }
+}
+
+
+int getTotalCPUTime(int index)
+{
+    return read_clock() - processTable[index].startTime;
 }
 
 /**************************************************************************
@@ -1028,10 +1048,4 @@ void time_slice()
 static int get_start_time()
 {
     return runningProcess->startTime;
-}
-
-
-int getTotalCPUTime(int index)
-{
-    return readClock() - processTable[index].startTime;
 }
