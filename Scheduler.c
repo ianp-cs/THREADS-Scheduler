@@ -83,7 +83,7 @@ check_io_function check_io;
  *************************************************************************/
 int bootstrap(void *pArgs)
 {
-    //set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
+    set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
 
     int result; /* value returned by call to spawn() */
     set_psr(PSR_KERNEL_MODE);
@@ -587,20 +587,20 @@ DWORD read_clock()
 void display_process_table()
 {
 
-    console_output(debugFlag, "\nPID    Parent    Priority    Status        # Kids       CPUtime         Name\n");
-    console_output(debugFlag, "-----------------------------------------------------------------------\n");
+    console_output(0, "\nPID    Parent    Priority    Status        # Kids       CPUtime         Name\n");
+    console_output(0, "-----------------------------------------------------------------------\n");
 
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
         if (processTable[i].pid > 0)
         {
-            console_output(debugFlag, "%d     %d        %d          %s            %d           %d         %s\n",
+            console_output(0, "%d     %d        %d          %s            %d           %d         %s\n",
                 processTable[i].pid, getParentPid(i), processTable[i].priority, getStatusStr(i),
                 processTable[i].numChildren, getTotalCPUTime(i), processTable[i].name);
         }
     }
 
-    console_output(debugFlag, "\n");
+    console_output(0, "\n");
 }
 
 
@@ -698,8 +698,7 @@ void dispatcher()
     // Give control to the next process and set its run time 
     runningProcess = nextProcess;
     runningProcess->runTime = read_clock();
-
-    display_process_table();
+    runningProcess->status = RUNNING;
 
     context_switch(runningProcess->context);
 }
@@ -975,8 +974,6 @@ static Process* getHighestPriorityProcess()
    *************************************************************************/
 static void cleanUpChild(Process* target)
 {
-    Process blankProcess;
-
     // Remove from parent, if it is the head of the children list
     if (runningProcess->pChildren->pid == target->pid)
     {
@@ -1002,8 +999,26 @@ static void cleanUpChild(Process* target)
     {
         if (processTable[i].pid == target->pid)
         {
-            blankProcess.pid = 0;
-            processTable[i] = blankProcess;
+            processTable[i].nextReadyProcess = NULL;
+            processTable[i].nextSiblingProcess = NULL;
+            processTable[i].pParent = NULL;
+            processTable[i].pChildren = NULL;
+            processTable[i].pJoined = NULL;
+
+            strcpy(processTable[i].name, "");
+            strcpy(processTable[i].startArgs, "");;
+            processTable[i].context = NULL;
+            processTable[i].pid = 0;
+            processTable[i].priority = 0;
+            processTable[i].entryPoint = NULL;
+           processTable[i].stack = '\0';
+            processTable[i].stacksize = 0;
+            processTable[i].status = 0;
+            processTable[i].exitCode = 0;
+            processTable[i].signaled = 0;
+            processTable[i].startTime = 0;
+            processTable[i].runTime = 0;
+            processTable[i].numChildren = 0;
         }
     }
 }
@@ -1038,7 +1053,7 @@ static void clock_handler(char* deviceName, uint8_t command, uint32_t status)
 
 void time_slice()
 {
-    if (read_time() >= 80)
+    if (read_time() >= 80000)
     {
         dispatcher();
     }
