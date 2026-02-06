@@ -33,6 +33,9 @@ typedef struct _process
 	int            status;				// READY, QUIT, BLOCKED, etc. 
 	int			   exitCode;			// The code needed by k_wait() and is input into k_exit()
 	int			   signaled;			// 1 = TRUE, 0 = FALSE
+	int			   startTime;			// The time the process was created, according to the system clock
+	int			   runTime;				// The start of the process' current run time. This resets everytime this process is set as the active process.
+	int			   numChildren;			// The number of active children processes this process has
 
 } Process;
 

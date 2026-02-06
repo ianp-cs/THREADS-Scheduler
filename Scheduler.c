@@ -36,6 +36,9 @@ void dispatcher();
 static int launch(void *);
 static void check_deadlock();
 static void DebugConsole(char* format, ...);
+void display_process_table();
+char* getStatusStr(int index);  // New function, placed here for organizational purposes
+int getTotalCPUTime(int index); // New function, placed here for organizational purposes
 
 /* New functions */
 static int push(Queue* target, Process* node);
@@ -46,6 +49,8 @@ static Process* getHighestPriorityProcess();
 static void cleanUpChild(Process* target);
 static void addJoinedProc(Process* target);
 static void clock_handler(char* deviceName, uint8_t command, uint32_t status);
+static void time_slice();
+static int get_start_time();
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -77,7 +82,7 @@ check_io_function check_io;
  *************************************************************************/
 int bootstrap(void *pArgs)
 {
-    set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
+    //set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
 
     int result; /* value returned by call to spawn() */
     set_psr(PSR_KERNEL_MODE);
@@ -212,6 +217,8 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     pNewProc->status = READY;
     pNewProc->exitCode = 0;
     pNewProc->signaled = 0;
+    pNewProc->runTime = 0;
+    pNewProc->numChildren = 0;
 
     // Some processes don't have args, so we need to account for NULL
     if (arg != NULL)
@@ -240,6 +247,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
         }
 
         pNewProc->pParent = runningProcess;
+        (pNewProc->pParent->numChildren)++;
     }
 
     /* Add the process to the ready list. */
@@ -253,6 +261,9 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     the initial value of the process's program counter (PC)
     */
     pNewProc->context = context_initialize(launch, stacksize, arg);
+
+    // Set the proccess start time
+    pNewProc->startTime = read_clock();
 
     // Skip this function call for Watchdog and Scheduler, we need to finish initializing
     if (pNewProc->pid > 2) 
@@ -560,20 +571,60 @@ int signaled()
 *************************************************************************/
 int read_time()
 {
-    return 0;
+    return read_clock() - runningProcess->runTime;
 }
 
 /*************************************************************************
    Name - readClock
 *************************************************************************/
-DWORD read_clock()
+uint32_t read_clock()
 {
     return system_clock();
 }
 
+
 void display_process_table()
 {
 
+    console_output(debugFlag, "\nPID    Parent    Priority    Status        # Kids       CPUtime    Name\n");
+    console_output(debugFlag, "-----------------------------------------------------------------------\n");
+
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (processTable[i].pid > 0)
+        {
+            console_output(debugFlag, "%d     %d        %d          %s            %d           %d         %s\n",
+                processTable[i].pid, processTable[i].pParent->pid, processTable[i].priority, getStatusStr(i), 
+                processTable[i].numChildren, getTotalCPUTime(i), processTable[i].name);
+        }
+    }
+
+    console_output(debugFlag, "\n");
+}
+
+
+char* getStatusStr(int index)
+{
+    if (processTable[index].status == READY)
+    {
+        return "READY";
+    }
+    else if (processTable[index].status == QUIT)
+    {
+        return "QUIT";
+    }
+    else if (processTable[index].status == BLOCKED)
+    {
+        return "BLOCKED";
+    }
+    else if (processTable[index].status == RUNNING)
+    {
+        return "RUNNING";
+    }
+    else
+    {
+        return "ERROR";
+    }
 }
 
 /**************************************************************************
@@ -624,8 +675,12 @@ void dispatcher()
         stop(1);
     }
 
-    // Give control to the next process
+    // Give control to the next process and set its run time 
     runningProcess = nextProcess;
+    runningProcess->runTime = read_clock();
+
+    display_process_table();
+
     context_switch(runningProcess->context);
 }
 
@@ -920,6 +975,8 @@ static void cleanUpChild(Process* target)
         child->nextSiblingProcess = target->nextSiblingProcess;
     }
 
+    (runningProcess->numChildren)--;
+
     // Clear child from the process table
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
@@ -955,5 +1012,26 @@ static void addJoinedProc(Process* target)
 
 static void clock_handler(char* deviceName, uint8_t command, uint32_t status)
 {
+    time_slice();
+}
 
+
+void time_slice()
+{
+    if (read_time() >= 80)
+    {
+        dispatcher();
+    }
+}
+
+
+static int get_start_time()
+{
+    return runningProcess->startTime;
+}
+
+
+int getTotalCPUTime(int index)
+{
+    return readClock() - processTable[index].startTime;
 }
