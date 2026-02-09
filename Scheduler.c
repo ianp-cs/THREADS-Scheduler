@@ -52,6 +52,8 @@ static void addJoinedProc(Process* target);
 static void clock_handler(char* deviceName, uint8_t command, uint32_t status);
 static void time_slice();
 static int get_start_time();
+static bool isJoined(Process* target);
+static bool hasChild(Process* target);
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -83,7 +85,7 @@ check_io_function check_io;
  *************************************************************************/
 int bootstrap(void *pArgs)
 {
-    set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
+    //set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
 
     int result; /* value returned by call to spawn() */
     set_psr(PSR_KERNEL_MODE);
@@ -231,7 +233,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     // If there is a parent process, link the parent and this process to each other.
     if (runningProcess != NULL)
     {
-        if (runningProcess->pChildren == NULL)
+        if (!hasChild(runningProcess))
         {
             runningProcess->pChildren = pNewProc;
         }
@@ -387,14 +389,17 @@ int k_wait(int* code)
 void k_exit(int code)
 {
     // Exiting process should not have children, halt program if it does
-    if (runningProcess->pChildren != NULL) 
+    if (hasChild(runningProcess)) 
     {
+        display_process_table();
         console_output(debugFlag, "k_exit(): Exiting process has active children, closing program.\n");
         stop(1);
     }
 
-    // If the process has a blocked parent, unblock it
-    if (runningProcess->pParent != NULL && runningProcess->pParent->status == BLOCKED) 
+    // If the process has a blocked and unjoined parent, unblock it
+    if (runningProcess->pParent != NULL && 
+        runningProcess->pParent->status == BLOCKED &&
+        !isJoined(runningProcess->pParent)) 
     {
         unblock(runningProcess->pParent->pid);
     }
@@ -1026,12 +1031,12 @@ static void cleanUpChild(Process* target)
 
 static void addJoinedProc(Process* target)
 {
-    // Add target to the current Process' list
-    Process* joinedPtr = runningProcess->pJoined;
+    // Add the current Process' to target's joined list
+    Process* joinedPtr = target->pJoined;
 
     if (joinedPtr == NULL)
     {
-        joinedPtr = target;
+        joinedPtr = runningProcess;
     }
     else
     {
@@ -1040,7 +1045,7 @@ static void addJoinedProc(Process* target)
             joinedPtr = joinedPtr->pJoined;
         }
 
-        joinedPtr->pJoined = target;
+        joinedPtr->pJoined = runningProcess;
     }
 }
 
@@ -1063,4 +1068,26 @@ void time_slice()
 static int get_start_time()
 {
     return runningProcess->startTime;
+}
+
+
+static bool isJoined(Process* target)
+{
+    if (target->pJoined != NULL)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+
+static bool hasChild(Process* target)
+{
+    if (target->pChildren != NULL)
+    {
+        return true;
+    }
+
+    return false;
 }
