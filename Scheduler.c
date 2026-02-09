@@ -53,7 +53,8 @@ static void clock_handler(char* deviceName, uint8_t command, uint32_t status);
 static void time_slice();
 static int get_start_time();
 static bool isJoined(Process* target);
-static bool hasChild(Process* target);
+static bool hasActiveChild(Process* target);
+static void freeJoinedProcesses();
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -85,7 +86,7 @@ check_io_function check_io;
  *************************************************************************/
 int bootstrap(void *pArgs)
 {
-    //set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
+    set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
 
     int result; /* value returned by call to spawn() */
     set_psr(PSR_KERNEL_MODE);
@@ -233,7 +234,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     // If there is a parent process, link the parent and this process to each other.
     if (runningProcess != NULL)
     {
-        if (!hasChild(runningProcess))
+        if (!hasActiveChild(runningProcess))
         {
             runningProcess->pChildren = pNewProc;
         }
@@ -351,12 +352,6 @@ int k_wait(int* code)
     child = runningProcess->pChildren; // Reset to head of children linked list
 
     block(BLOCKED); // Block the parent and wait for control to be returned
-    dispatcher();
-
-    if (signaled()) // Signaled while waiting, return error code -5
-    {
-        return -5;
-    }
 
     while (child != NULL) // Find exited child
     {
@@ -369,6 +364,11 @@ int k_wait(int* code)
         }
 
         child = child->nextSiblingProcess; // Set new head of children linked list for the parent
+    }
+
+    if (signaled()) // Signaled while waiting, return error code -5
+    {
+        return -5;
     }
 
     return result;
@@ -389,23 +389,12 @@ int k_wait(int* code)
 void k_exit(int code)
 {
     // Exiting process should not have children, halt program if it does
-    if (hasChild(runningProcess)) 
+    if (hasActiveChild(runningProcess)) 
     {
         display_process_table();
         console_output(debugFlag, "k_exit(): Exiting process has active children, closing program.\n");
         stop(1);
     }
-
-    // If the process has a blocked and unjoined parent, unblock it
-    if (runningProcess->pParent != NULL && 
-        runningProcess->pParent->status == BLOCKED &&
-        !isJoined(runningProcess->pParent)) 
-    {
-        unblock(runningProcess->pParent->pid);
-    }
-    
-    // Signal to parent that this process needs to be cleaned up
-    runningProcess->status = QUIT;
 
     if (signaled()) // Signaled while exiting, overwrite error code -5
     {
@@ -415,6 +404,30 @@ void k_exit(int code)
     {
         runningProcess->exitCode = code;
     }
+
+    // Signal to parent that this process should no longer be considered active
+    if (runningProcess->pParent != NULL)
+    {
+        (runningProcess->pParent->numChildren)--;
+    }
+
+    // If the process has a blocked, unjoined, childless parent, unblock it
+    if (runningProcess->pParent != NULL && 
+        runningProcess->pParent->status == BLOCKED &&
+        !isJoined(runningProcess->pParent) &&
+        !hasActiveChild(runningProcess->pParent)) 
+    {
+        unblock(runningProcess->pParent->pid);
+    }
+
+    // If the process has joined processes, free and unblock them
+    if (runningProcess->numJoined > 0)
+    {
+        freeJoinedProcesses();
+    }
+
+    // Signal to parent that this process needs to be cleaned up
+    runningProcess->status = QUIT;
 
     // Surrender control and wait to be cleaned up
     dispatcher();
@@ -476,6 +489,7 @@ int k_getpid()
 ***************************************************************************/
 int k_join(int pid, int* pChildExitCode)
 {
+
     // Input Validation
     Process* target = NULL;
 
@@ -483,6 +497,12 @@ int k_join(int pid, int* pChildExitCode)
     {
         console_output(debugFlag, "k_join(): Attempted to join process to itself, closing program.\n");
         stop(1);
+    }
+
+    if (runningProcess->pParent->pid == pid)
+    {
+        console_output(debugFlag, "k_join(): Attempted to join process to its parent, closing program.\n");
+        stop(2);
     }
 
     for (int i = 0; i < MAX_PROCESSES; i++)
@@ -497,13 +517,15 @@ int k_join(int pid, int* pChildExitCode)
     if (target == NULL)
     {
         console_output(debugFlag, "k_join(): Attempted to join process to a non-existant process, closing program.\n");
-        stop(1);
+        stop(3);
     }
 
     // Join Processes
     addJoinedProc(target);
+    runningProcess->joined = true;
     block(BLOCKED);
-    dispatcher();
+
+    *pChildExitCode = runningProcess->endJoinCode;
 
     if (signaled())
     {
@@ -518,6 +540,7 @@ int k_join(int pid, int* pChildExitCode)
 *************************************************************************/
 int unblock(int pid)
 {
+
     // Input validation
     Process* target = NULL;
 
@@ -533,6 +556,7 @@ int unblock(int pid)
     // This will need to be changed if there ends up being more than 1 BLOCKED status code
     if (target == NULL || target->status != BLOCKED) 
     {
+        enableInterrupts();
         return -1;
     }
 
@@ -825,6 +849,7 @@ int check_io_scheduler()
    *************************************************************************/
 static int push(Queue* target, Process* node)
 {
+    disableInterrupts();
     if (target->size == (MAX_PROCESSES - 1))
     {
         console_output(TRUE, "Could not add Process '%s' to Queue %d, the Queue is full.\n", node->name, target->priority);
@@ -849,6 +874,7 @@ static int push(Queue* target, Process* node)
         target->size += 1;
         return target->size;
     }
+    enableInterrupts();
 }
 
 /**************************************************************************
@@ -864,6 +890,7 @@ static int push(Queue* target, Process* node)
    *************************************************************************/
 static Process* pop(Queue* target)
 {
+    disableInterrupts();
     Process* node = NULL;
 
     if (target->size == 0)
@@ -885,6 +912,7 @@ static Process* pop(Queue* target)
         target->size -= 1;
     }
 
+    enableInterrupts();
     return node;
 }
 
@@ -997,8 +1025,6 @@ static void cleanUpChild(Process* target)
         child->nextSiblingProcess = target->nextSiblingProcess;
     }
 
-    (runningProcess->numChildren)--;
-
     // Clear child from the process table
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
@@ -1008,7 +1034,6 @@ static void cleanUpChild(Process* target)
             processTable[i].nextSiblingProcess = NULL;
             processTable[i].pParent = NULL;
             processTable[i].pChildren = NULL;
-            processTable[i].pJoined = NULL;
 
             strcpy(processTable[i].name, "");
             strcpy(processTable[i].startArgs, "");;
@@ -1031,24 +1056,10 @@ static void cleanUpChild(Process* target)
 
 static void addJoinedProc(Process* target)
 {
-    // Add the current Process' to target's joined list
-    Process* joinedPtr = target->pJoined;
-
-    if (joinedPtr == NULL)
-    {
-        joinedPtr = runningProcess;
-    }
-    else
-    {
-        while (joinedPtr->pJoined != NULL)
-        {
-            joinedPtr = joinedPtr->pJoined;
-        }
-
-        joinedPtr->pJoined = runningProcess;
-    }
+    // Add the current Process' to target's joined list and increment joined count
+    target->pJoined[target->numJoined] = runningProcess;
+    (target->numJoined)++;
 }
-
 
 static void clock_handler(char* deviceName, uint8_t command, uint32_t status)
 {
@@ -1073,7 +1084,13 @@ static int get_start_time()
 
 static bool isJoined(Process* target)
 {
-    if (target->pJoined != NULL)
+    return target->joined;
+}
+
+
+static bool hasActiveChild(Process* target)
+{
+    if (target->numChildren > 0)
     {
         return true;
     }
@@ -1082,12 +1099,13 @@ static bool isJoined(Process* target)
 }
 
 
-static bool hasChild(Process* target)
+static void freeJoinedProcesses()
 {
-    if (target->pChildren != NULL)
+    for (int i = 0; i < runningProcess->numJoined; i++)
     {
-        return true;
+        Process* target = runningProcess->pJoined[i];
+        target->joined = false;
+        target->endJoinCode = runningProcess->exitCode;
+        unblock(target->pid);
     }
-
-    return false;
 }

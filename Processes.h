@@ -16,11 +16,11 @@ Processes are the simulated processes created and used by the "Operating System"
 */
 typedef struct _process
 {
-	struct _process*        nextReadyProcess;	// Points to the next ready process in the priority queue
-	struct _process*		nextSiblingProcess;	// Points to the next child belonging to this process' parent
-	struct _process*		pParent;			// Points to this process' parent 
-	struct _process*        pChildren;			// Points to the head child in this process' children linked list
-	struct _process*		pJoined;			// Points to the head of the Joined processes linked list
+	struct _process*        nextReadyProcess;			// Points to the next ready process in the priority queue
+	struct _process*		nextSiblingProcess;			// Points to the next child belonging to this process' parent
+	struct _process*		pParent;					// Points to this process' parent 
+	struct _process*        pChildren;					// Points to the head child in this process' children linked list
+	struct _process*		pJoined[MAX_PROCESSES];		// An array of pointers to processes joined to this process
 
 	char           name[MAXNAME];		// Process name 
 	char           startArgs[MAXARG];	// Process arguments 
@@ -36,6 +36,9 @@ typedef struct _process
 	int			   startTime;			// The time the process was created, according to the system clock
 	int			   runTime;				// The start of the process' current run time. This resets everytime this process is set as the active process.
 	int			   numChildren;			// The number of active children processes this process has
+	int			   numJoined;			// The number of processes joined to this process
+	bool		   joined;				// Is the process joined to another?
+	int			   endJoinCode;			// The exit code received by the last process this process was joined to
 
 } Process;
 
