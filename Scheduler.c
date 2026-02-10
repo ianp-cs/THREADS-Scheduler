@@ -37,9 +37,9 @@ static int launch(void *);
 static void check_deadlock();
 static void DebugConsole(char* format, ...);
 void display_process_table();
-int getParentPid(int index);    // New function, placed here for organizational purposes
-char* getStatusStr(int index);  // New function, placed here for organizational purposes
-int getTotalCPUTime(int index); // New function, placed here for organizational purposes
+static int getParentPid(int index);    // New function, placed here for organizational purposes
+static char* getStatusStr(int index);  // New function, placed here for organizational purposes
+static int getTotalCPUTime(int index); // New function, placed here for organizational purposes
 
 /* New functions */
 static int push(Queue* target, Process* node);
@@ -55,6 +55,7 @@ static int get_start_time();
 static bool isJoined(Process* target);
 static bool hasActiveChild(Process* target);
 static void freeJoinedProcesses();
+static void checkKernelMode();
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -159,17 +160,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     int proc_slot;
     struct _process* pNewProc;
 
-    // Lecture slide says to check for kernel mode being active for this function, but says to throw error code -3,
-    // which contradicts the project documentation. Only throwing error code -3 causes us to fail test 11. So instead
-    // we will stop the program with an error.
-
-    int psr = get_psr() & PSR_KERNEL_MODE;
-
-    if (psr != PSR_KERNEL_MODE)
-    {
-        console_output(false, "spawn(): Not in Kernel Mode.\n");
-        stop(1);
-    }
+    checkKernelMode();
 
     DebugConsole("spawn(): creating process %s\n", name);
 
@@ -178,31 +169,37 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     /* Validate all of the parameters*/
     if (name == NULL)
     {
-        console_output(debugFlag, "spawn(): Name value is NULL.\n");
+        console_output(false, "spawn(): Name value is NULL.\n");
         enableInterrupts();
         return -1;
     }
     if (strlen(name) >= (MAXNAME - 1))
     {
-        console_output(debugFlag, "spawn(): Process name is too long.  Halting...\n");
+        console_output(false, "spawn(): Process name is too long.  Halting...\n");
         stop(1);
     }
     if (stacksize < THREADS_MIN_STACK_SIZE)
     {
-        console_output(debugFlag, "spawn(): Stack size is too small.\n");
+        console_output(false, "spawn(): Stack size is too small.\n");
         enableInterrupts();
-        return -4;
+        return -2;
     }
     if (priority < LOWEST_PRIORITY || priority > HIGHEST_PRIORITY)
     {
-        console_output(debugFlag, "spawn(): Invalid priority.\n");
+        console_output(false, "spawn(): Invalid priority.\n");
         enableInterrupts();
-        return -5;
+        return -3;
     }
 
     /* Find an empty slot in the process table and save the index*/
-    for (int i = 0; i < MAX_PROCESSES; i++)
+    for (int i = 0; i < MAX_PROCESSES + 1; i++)
     {
+        if (i == MAX_PROCESSES)
+        {
+            console_output(false, "spawn(): Failed to create process, the process table is full.\n");
+            enableInterrupts();
+            return -4;
+        }
         if (processTable[i].pid == 0)
         {
             proc_slot = i;
@@ -259,7 +256,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     /* Add the process to the ready list. */
     if (push(&readyLists[pNewProc->priority], pNewProc) == 0)
     {
-        return -2;
+        return -5;
     }
 
     /* 
@@ -326,6 +323,8 @@ static int launch(void *args)
 ************************************************************************ */
 int k_wait(int* code)
 {
+    checkKernelMode();
+
     int result = 0;
     Process* child = runningProcess->pChildren;
 
@@ -390,6 +389,8 @@ int k_wait(int* code)
 *************************************************************************/
 void k_exit(int code)
 {
+    checkKernelMode();
+
     // Exiting process should not have children, halt program if it does
     if (hasActiveChild(runningProcess)) 
     {
@@ -444,6 +445,8 @@ void k_exit(int code)
 *************************************************************************/
 int k_kill(int pid, int signal)
 {
+    checkKernelMode();
+
     Process* target = NULL;
 
     if (signal != SIG_TERM)
@@ -481,6 +484,8 @@ int k_kill(int pid, int signal)
 *************************************************************************/
 int k_getpid()
 {
+    checkKernelMode();
+
     return runningProcess->pid;
 }
 
@@ -489,6 +494,7 @@ int k_getpid()
 ***************************************************************************/
 int k_join(int pid, int* pChildExitCode)
 {
+    checkKernelMode();
 
     // Input Validation
     Process* target = NULL;
@@ -540,6 +546,7 @@ int k_join(int pid, int* pChildExitCode)
 *************************************************************************/
 int unblock(int pid)
 {
+    checkKernelMode();
 
     // Input validation
     Process* target = NULL;
@@ -572,6 +579,8 @@ int unblock(int pid)
 *************************************************************************/
 int block(int newStatus)
 {
+    checkKernelMode();
+
     if (newStatus < 10)
     {
         console_output(debugFlag, "block(): Blocking status code is NOT greater than 10, closing program.\n");
@@ -594,6 +603,8 @@ int block(int newStatus)
 *************************************************************************/
 int signaled()
 {
+    checkKernelMode();
+
     return runningProcess->signaled;
 }
 /*************************************************************************
@@ -601,6 +612,8 @@ int signaled()
 *************************************************************************/
 int read_time()
 {
+    checkKernelMode();
+
     if (runningProcess != NULL)
     {
         return read_clock() - runningProcess->runTime;
@@ -620,6 +633,7 @@ DWORD read_clock()
 
 void display_process_table()
 {
+    checkKernelMode();
 
     console_output(0, "\nPID    Parent    Priority    Status        # Kids       CPUtime         Name\n");
     console_output(0, "-----------------------------------------------------------------------\n");
@@ -638,8 +652,10 @@ void display_process_table()
 }
 
 
-int getParentPid(int index)
+static int getParentPid(int index)
 {
+    checkKernelMode();
+
     if (processTable[index].pParent == NULL)
     {
         return -1;
@@ -651,7 +667,7 @@ int getParentPid(int index)
 }
 
 
-char* getStatusStr(int index)
+static char* getStatusStr(int index)
 {
     if (processTable[index].status == READY)
     {
@@ -676,7 +692,7 @@ char* getStatusStr(int index)
 }
 
 
-int getTotalCPUTime(int index)
+static int getTotalCPUTime(int index)
 {
     return read_clock() - processTable[index].startTime;
 }
@@ -693,6 +709,8 @@ int getTotalCPUTime(int index)
 *************************************************************************/
 void dispatcher()
 {
+    checkKernelMode();
+
     Process* nextProcess = NULL; // Points to the next process that should run
 
     // No process was running
@@ -834,6 +852,8 @@ static void DebugConsole(char* format, ...)
 /* there is no I/O yet, so return false. */
 int check_io_scheduler()
 {
+    checkKernelMode();
+
     return false;
 }
 
@@ -1112,5 +1132,17 @@ static void freeJoinedProcesses()
         target->joined = false;
         target->endJoinCode = runningProcess->exitCode;
         unblock(target->pid);
+    }
+}
+
+
+static void checkKernelMode()
+{
+    int psr = get_psr() & PSR_KERNEL_MODE;
+
+    if (psr != PSR_KERNEL_MODE)
+    {
+        console_output(false, "spawn(): Not in Kernel Mode.\n");
+        stop(1);
     }
 }
