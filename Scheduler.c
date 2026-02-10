@@ -160,17 +160,15 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     int proc_slot;
     struct _process* pNewProc;
 
-    /*
     if (get_psr() != PSR_KERNEL_MODE)
     {
-        console_output(debugFlag, "spawn(): Not in Kernel Mode.\n");
+        console_output(false, "spawn(): Not in Kernel Mode.\n");
         return -3;
     }
-    */
 
     // Documentation says to check for Kernel Mode, but it doesn't say where Kernel mode should be activated?
     // This will likely need to be fixed while working on future milestones when we have more information!
-    set_psr(PSR_KERNEL_MODE); 
+    //set_psr(PSR_KERNEL_MODE); 
 
     DebugConsole("spawn(): creating process %s\n", name);
 
@@ -391,8 +389,7 @@ void k_exit(int code)
     // Exiting process should not have children, halt program if it does
     if (hasActiveChild(runningProcess)) 
     {
-        display_process_table();
-        console_output(debugFlag, "k_exit(): Exiting process has active children, closing program.\n");
+        console_output(false, "k_exit(): Exiting process has active children, closing program.\n");
         stop(1);
     }
 
@@ -411,11 +408,10 @@ void k_exit(int code)
         (runningProcess->pParent->numChildren)--;
     }
 
-    // If the process has a blocked, unjoined, childless parent, unblock it
+    // If the process has a blocked, unjoined parent, unblock it
     if (runningProcess->pParent != NULL && 
         runningProcess->pParent->status == BLOCKED &&
-        !isJoined(runningProcess->pParent) &&
-        !hasActiveChild(runningProcess->pParent)) 
+        !isJoined(runningProcess->pParent)) 
     {
         unblock(runningProcess->pParent->pid);
     }
@@ -495,13 +491,13 @@ int k_join(int pid, int* pChildExitCode)
 
     if (getpid() == pid)
     {
-        console_output(debugFlag, "k_join(): Attempted to join process to itself, closing program.\n");
+        console_output(false, "k_join(): Attempted to join process to itself, closing program.\n");
         stop(1);
     }
 
     if (runningProcess->pParent->pid == pid)
     {
-        console_output(debugFlag, "k_join(): Attempted to join process to its parent, closing program.\n");
+        console_output(false, "k_join(): Attempted to join process to its parent, closing program.\n");
         stop(2);
     }
 
@@ -516,7 +512,7 @@ int k_join(int pid, int* pChildExitCode)
 
     if (target == NULL)
     {
-        console_output(debugFlag, "k_join(): Attempted to join process to a non-existant process, closing program.\n");
+        console_output(false, "k_join(): Attempted to join process to a non-existant process, closing program.\n");
         stop(3);
     }
 
