@@ -53,6 +53,7 @@ static void clock_handler(char* deviceName, uint8_t command, uint32_t status);
 static void time_slice();
 static int get_start_time();
 static bool isJoined(Process* target);
+static bool hasChild(Process* target);
 static bool hasActiveChild(Process* target);
 static void freeJoinedProcesses();
 static void checkKernelMode();
@@ -234,7 +235,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     // If there is a parent process, link the parent and this process to each other.
     if (runningProcess != NULL)
     {
-        if (!hasActiveChild(runningProcess))
+        if (!hasChild(runningProcess))
         {
             runningProcess->pChildren = pNewProc;
         }
@@ -325,7 +326,7 @@ static int launch(void *args)
 int k_wait(int* code)
 {
     checkKernelMode();
-
+    
     int result = 0;
     Process* child = runningProcess->pChildren;
     Process* childFound = NULL;
@@ -406,7 +407,6 @@ int k_wait(int* code)
 *************************************************************************/
 void k_exit(int code)
 {
-    disableInterrupts();
     checkKernelMode();
 
     // Exiting process should not have children, halt program if it does
@@ -451,8 +451,6 @@ void k_exit(int code)
     {
         runningProcess->status = QUIT;
     }
-
-    enableInterrupts();
 
     // Surrender control and wait to be cleaned up
     dispatcher();
@@ -570,7 +568,6 @@ int k_join(int pid, int* pChildExitCode)
 *************************************************************************/
 int unblock(int pid)
 {
-    disableInterrupts();
     checkKernelMode();
 
     // Input validation
@@ -594,8 +591,6 @@ int unblock(int pid)
     // Unblock Process
     target->status = READY;
     push(&readyLists[target->priority], target);
-
-    enableInterrupts();
     return 0;
 }
 
@@ -1135,6 +1130,17 @@ static int get_start_time()
 static bool isJoined(Process* target)
 {
     return target->joined;
+}
+
+
+static bool hasChild(Process* target)
+{
+    if (target->pChildren != NULL)
+    {
+        return true;
+    }
+
+    return false;
 }
 
 

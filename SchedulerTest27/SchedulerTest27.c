@@ -67,12 +67,12 @@ int SpawnTwoDifferentPriorities(char* strArgs)
         snprintf(nameBuffer, sizeof(nameBuffer), "%s-Child1", strArgs);
         kidpid = k_spawn(nameBuffer, SimpleDelayExit, nameBuffer, THREADS_MIN_STACK_SIZE, 3);
         console_output(FALSE, "%s: spawn of first child returned pid = %d\n", strArgs, kidpid);
-
+        
         snprintf(nameBuffer, sizeof(nameBuffer), "%s-Child2", strArgs);
         console_output(FALSE, "%s: performing spawn of second child\n", strArgs);
         kidpid = k_spawn(nameBuffer, SimpleDelayExit, nameBuffer, THREADS_MIN_STACK_SIZE, 4);
         console_output(FALSE, "%s: spawn of second child returned pid = %d\n", strArgs, kidpid);
-
+        
         console_output(FALSE, "%s: performing first wait\n", strArgs);
         kidpid = k_wait(&status);
         console_output(FALSE, "%s: exit status for child %d is %d\n", strArgs,
