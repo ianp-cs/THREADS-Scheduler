@@ -89,7 +89,6 @@ int bootstrap(void *pArgs)
     set_debug_level(0); // COMMENT THIS LINE OUT TO ENABLE DEBUG MESSAGES
 
     int result; /* value returned by call to spawn() */
-    set_psr(PSR_KERNEL_MODE);
 
     /* set this to the scheduler version of this function.*/
     check_io = check_io_scheduler;
@@ -160,15 +159,17 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     int proc_slot;
     struct _process* pNewProc;
 
-    if (get_psr() != PSR_KERNEL_MODE)
+    // Lecture slide says to check for kernel mode being active for this function, but says to throw error code -3,
+    // which contradicts the project documentation. Only throwing error code -3 causes us to fail test 11. So instead
+    // we will stop the program with an error.
+
+    int psr = get_psr() & PSR_KERNEL_MODE;
+
+    if (psr != PSR_KERNEL_MODE)
     {
         console_output(false, "spawn(): Not in Kernel Mode.\n");
-        return -3;
+        stop(1);
     }
-
-    // Documentation says to check for Kernel Mode, but it doesn't say where Kernel mode should be activated?
-    // This will likely need to be fixed while working on future milestones when we have more information!
-    //set_psr(PSR_KERNEL_MODE); 
 
     DebugConsole("spawn(): creating process %s\n", name);
 
@@ -178,21 +179,24 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     if (name == NULL)
     {
         console_output(debugFlag, "spawn(): Name value is NULL.\n");
+        enableInterrupts();
         return -1;
     }
     if (strlen(name) >= (MAXNAME - 1))
     {
         console_output(debugFlag, "spawn(): Process name is too long.  Halting...\n");
-        stop( 1);
+        stop(1);
     }
     if (stacksize < THREADS_MIN_STACK_SIZE)
     {
         console_output(debugFlag, "spawn(): Stack size is too small.\n");
+        enableInterrupts();
         return -4;
     }
     if (priority < LOWEST_PRIORITY || priority > HIGHEST_PRIORITY)
     {
         console_output(debugFlag, "spawn(): Invalid priority.\n");
+        enableInterrupts();
         return -5;
     }
 
@@ -597,7 +601,12 @@ int signaled()
 *************************************************************************/
 int read_time()
 {
-    return read_clock() - runningProcess->runTime;
+    if (runningProcess != NULL)
+    {
+        return read_clock() - runningProcess->runTime;
+    }
+
+    return 0;
 }
 
 /*************************************************************************
@@ -793,7 +802,7 @@ static inline void enableInterrupts()
 {
     int psr = get_psr();
 
-    psr = psr & PSR_INTERRUPTS;
+    psr = psr | PSR_INTERRUPTS;
 
     set_psr(psr);
 
