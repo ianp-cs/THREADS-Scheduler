@@ -56,6 +56,7 @@ static bool isJoined(Process* target);
 static bool hasActiveChild(Process* target);
 static void freeJoinedProcesses();
 static void checkKernelMode();
+static bool isScheduler();
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -405,6 +406,7 @@ int k_wait(int* code)
 *************************************************************************/
 void k_exit(int code)
 {
+    disableInterrupts();
     checkKernelMode();
 
     // Exiting process should not have children, halt program if it does
@@ -443,6 +445,14 @@ void k_exit(int code)
     {
         freeJoinedProcesses();
     }
+
+    // If this process is the scheduler, change status to quit
+    if (isScheduler())
+    {
+        runningProcess->status = QUIT;
+    }
+
+    enableInterrupts();
 
     // Surrender control and wait to be cleaned up
     dispatcher();
@@ -560,6 +570,7 @@ int k_join(int pid, int* pChildExitCode)
 *************************************************************************/
 int unblock(int pid)
 {
+    disableInterrupts();
     checkKernelMode();
 
     // Input validation
@@ -584,8 +595,7 @@ int unblock(int pid)
     target->status = READY;
     push(&readyLists[target->priority], target);
 
-    dispatcher();
-
+    enableInterrupts();
     return 0;
 }
 
@@ -1160,4 +1170,15 @@ static void checkKernelMode()
         console_output(false, "spawn(): Not in Kernel Mode.\n");
         stop(1);
     }
+}
+
+
+static bool isScheduler()
+{
+    if (runningProcess->pid == 2)
+    {
+        return true;
+    }
+
+    return false;
 }
