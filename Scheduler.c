@@ -186,7 +186,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     }
     if (priority < LOWEST_PRIORITY || priority > HIGHEST_PRIORITY)
     {
-        console_output(false, "spawn(): Invalid priority.\n");
+        console_output(false, "spawn(): Invalid priority, priority out of range.\n");
         enableInterrupts();
         return -3;
     }
@@ -327,44 +327,60 @@ int k_wait(int* code)
 
     int result = 0;
     Process* child = runningProcess->pChildren;
+    Process* childFound = NULL;
+    int highestPriority = -1; // The priority of the highest priority child 
 
-    // Case: Process has no children
+    // Case 1: Process has no children
     if (child == NULL) 
     {
         return -1;
     }
+    // End case 1
 
-    // Case: a child has already exited
+    // Case 2: a child has already exited
     while (child != NULL) 
     {
-        if (child->status == QUIT) // Find the child and clean it up
+        if (child->status == QUIT && child->priority > highestPriority) // Find the next child with highest priority
         {
             *code = child->exitCode;
             result = child->pid;
-            cleanUpChild(child);
-            return result;
+            highestPriority = child->priority;
+            childFound = child;
         }
 
         child = child->nextSiblingProcess; // Set new head of children linked list for the parent
     }
 
-    // Case: no child has exited yet and this process must wait
+    if (childFound != NULL)
+    {
+        cleanUpChild(childFound);
+        return result;
+    }
+    // End Case 2
+
+    // Case 3: no child has exited yet and this process must wait
 
     child = runningProcess->pChildren; // Reset to head of children linked list
 
     block(BLOCKED); // Block the parent and wait for control to be returned
 
-    while (child != NULL) // Find exited child
+    while (child != NULL)
     {
-        if (child->status == QUIT) // Find the child and clean it up
+        if (child->status == QUIT && child->priority > highestPriority) // Find the next child with highest priority
         {
             *code = child->exitCode;
             result = child->pid;
-            cleanUpChild(child);
-            break;
+            highestPriority = child->priority;
+            childFound = child;
         }
 
         child = child->nextSiblingProcess; // Set new head of children linked list for the parent
+    }
+
+    if (childFound != NULL)
+    {
+        cleanUpChild(childFound);
+        return result;
     }
 
     if (signaled()) // Signaled while waiting, return error code -5
@@ -373,7 +389,7 @@ int k_wait(int* code)
     }
 
     return result;
-
+    // End Case 3
 } 
 
 /**************************************************************************
@@ -407,15 +423,16 @@ void k_exit(int code)
         runningProcess->exitCode = code;
     }
 
-    // Signal to parent that this process should no longer be considered active
+    // Signal to parent that this process should no longer be considered active and it needs to be cleaned up
     if (runningProcess->pParent != NULL)
     {
         (runningProcess->pParent->numChildren)--;
+        runningProcess->status = QUIT;
     }
 
     // If the process has a blocked, unjoined parent, unblock it
     if (runningProcess->pParent != NULL && 
-        runningProcess->pParent->status == BLOCKED &&
+        runningProcess->pParent->status >= BLOCKED &&
         !isJoined(runningProcess->pParent)) 
     {
         unblock(runningProcess->pParent->pid);
@@ -426,9 +443,6 @@ void k_exit(int code)
     {
         freeJoinedProcesses();
     }
-
-    // Signal to parent that this process needs to be cleaned up
-    runningProcess->status = QUIT;
 
     // Surrender control and wait to be cleaned up
     dispatcher();
@@ -499,7 +513,7 @@ int k_join(int pid, int* pChildExitCode)
     // Input Validation
     Process* target = NULL;
 
-    if (getpid() == pid)
+    if (k_getpid() == pid)
     {
         console_output(false, "k_join(): Attempted to join process to itself, closing program.\n");
         stop(1);
@@ -560,8 +574,7 @@ int unblock(int pid)
         }
     }
 
-    // This will need to be changed if there ends up being more than 1 BLOCKED status code
-    if (target == NULL || target->status != BLOCKED) 
+    if (target == NULL || target->status < BLOCKED) 
     {
         enableInterrupts();
         return -1;
@@ -570,6 +583,8 @@ int unblock(int pid)
     // Unblock Process
     target->status = READY;
     push(&readyLists[target->priority], target);
+
+    dispatcher();
 
     return 0;
 }
@@ -677,13 +692,13 @@ static char* getStatusStr(int index)
     {
         return "QUIT";
     }
-    else if (processTable[index].status == BLOCKED)
-    {
-        return "BLOCKED";
-    }
     else if (processTable[index].status == RUNNING)
     {
         return "RUNNING";
+    }
+    else if (processTable[index].status >= BLOCKED)
+    {
+        return "BLOCKED";
     }
     else
     {
@@ -719,7 +734,7 @@ void dispatcher()
         nextProcess = getHighestPriorityProcess();
     }
     // Current process has been blocked by another process or has exited, do not add to readyLists
-    else if (runningProcess->status == BLOCKED || runningProcess->status == QUIT)
+    else if (runningProcess->status >= BLOCKED || runningProcess->status == QUIT)
     {
         nextProcess = getHighestPriorityProcess();
     }
@@ -1042,7 +1057,7 @@ static void cleanUpChild(Process* target)
     {
         Process* child = runningProcess->pChildren;
 
-        while (child->nextSiblingProcess->pid != target->pid);
+        while (child->nextSiblingProcess->pid != target->pid)
         {
             child = child->nextSiblingProcess;
         }
@@ -1066,7 +1081,7 @@ static void cleanUpChild(Process* target)
             processTable[i].pid = 0;
             processTable[i].priority = 0;
             processTable[i].entryPoint = NULL;
-           processTable[i].stack = '\0';
+            processTable[i].stack = '\0';
             processTable[i].stacksize = 0;
             processTable[i].status = 0;
             processTable[i].exitCode = 0;

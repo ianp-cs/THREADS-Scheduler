@@ -6,10 +6,10 @@ Course: CYBV 489
 
 #pragma once
 
-#define READY 11		// Waiting to run
-#define QUIT 12			// Waiting to be cleaned up and removed
-#define BLOCKED 13		// Waiting for a child or joined process to finish running
-#define RUNNING 14		// Actively running; is the current running process
+#define READY 1			// Waiting to run
+#define QUIT 2			// Waiting to be cleaned up and removed
+#define RUNNING 3		// Actively running; is the current running process
+#define BLOCKED 11		// Waiting for a child or joined process to finish running
 
 /*
 Processes are the simulated processes created and used by the "Operating System" in the THREADS environment.
