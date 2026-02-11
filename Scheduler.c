@@ -56,7 +56,7 @@ static bool isJoined(Process* target);
 static bool hasChild(Process* target);
 static bool hasActiveChild(Process* target);
 static void freeJoinedProcesses();
-static void checkKernelMode();
+static bool checkKernelMode();
 static bool isScheduler();
 static int exitedListPush(Process* target, Process* child);
 static Process* exitedListPop(Process* target);
@@ -164,7 +164,11 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     int proc_slot;
     struct _process* pNewProc;
 
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "spawn(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     DebugConsole("spawn(): creating process %s\n", name);
 
@@ -327,7 +331,11 @@ static int launch(void *args)
 ************************************************************************ */
 int k_wait(int* code)
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "k_wait(): Not in Kernel Mode.\n");
+        stop(1);
+    }
     
     int result = 0;
     Process* child;
@@ -339,7 +347,7 @@ int k_wait(int* code)
     }
 
     // Case 2: a child has already exited
-    while (runningProcess->numExited > 0)
+    if (runningProcess->numExited > 0)
     {
         child = exitedListPop(runningProcess);
         result = child->pid;
@@ -352,7 +360,7 @@ int k_wait(int* code)
 
     block(BLOCKED); // Block the parent and wait for control to be returned
 
-    while (runningProcess->numExited > 0)
+    if (runningProcess->numExited > 0)
     {
         child = exitedListPop(runningProcess);
         result = child->pid;
@@ -381,7 +389,11 @@ int k_wait(int* code)
 *************************************************************************/
 void k_exit(int code)
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "k_exit(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     // Exiting process should not have children, halt program if it does
     if (hasActiveChild(runningProcess)) 
@@ -418,7 +430,7 @@ void k_exit(int code)
     // If the process has joined processes, free and unblock them
     if (runningProcess->numJoined > 0)
     {
-        freeJoinedProcesses();
+        freeJoinedProcesses(runningProcess);
     }
 
     // If this process is the scheduler, change status to quit
@@ -442,7 +454,11 @@ void k_exit(int code)
 *************************************************************************/
 int k_kill(int pid, int signal)
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "k_kill(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     Process* target = NULL;
 
@@ -481,7 +497,11 @@ int k_kill(int pid, int signal)
 *************************************************************************/
 int k_getpid()
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "k_getpid(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     return runningProcess->pid;
 }
@@ -491,7 +511,11 @@ int k_getpid()
 ***************************************************************************/
 int k_join(int pid, int* pChildExitCode)
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "k_join(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     // Input Validation
     Process* target = NULL;
@@ -543,7 +567,11 @@ int k_join(int pid, int* pChildExitCode)
 *************************************************************************/
 int unblock(int pid)
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "unblock(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     // Input validation
     Process* target = NULL;
@@ -566,6 +594,9 @@ int unblock(int pid)
     // Unblock Process
     target->status = READY;
     readyListPush(&readyLists[target->priority], target);
+
+    dispatcher();
+
     return 0;
 }
 
@@ -574,7 +605,11 @@ int unblock(int pid)
 *************************************************************************/
 int block(int newStatus)
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "block(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     if (newStatus < 10)
     {
@@ -598,7 +633,11 @@ int block(int newStatus)
 *************************************************************************/
 int signaled()
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "signaled(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     return runningProcess->signaled;
 }
@@ -607,7 +646,11 @@ int signaled()
 *************************************************************************/
 int read_time()
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "read_time(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     if (runningProcess != NULL)
     {
@@ -628,16 +671,20 @@ DWORD read_clock()
 
 void display_process_table()
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "display_process_table(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     console_output(0, "\nPID    Parent    Priority    Status        # Kids       CPUtime         Name\n");
-    console_output(0, "-----------------------------------------------------------------------\n");
+    console_output(0, "------------------------------------------------------------------------------\n");
 
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
         if (processTable[i].pid > 0)
         {
-            console_output(0, "%d     %d        %d          %s            %d           %d         %s\n",
+            console_output(0, "%-7d%-10d%-12d%-14s%-13d%-16d%s\n",
                 processTable[i].pid, getParentPid(i), processTable[i].priority, getStatusStr(i),
                 processTable[i].numChildren, getTotalCPUTime(i), processTable[i].name);
         }
@@ -649,8 +696,6 @@ void display_process_table()
 
 static int getParentPid(int index)
 {
-    checkKernelMode();
-
     if (processTable[index].pParent == NULL)
     {
         return -1;
@@ -704,7 +749,11 @@ static int getTotalCPUTime(int index)
 *************************************************************************/
 void dispatcher()
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "dispatcher(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     Process* nextProcess = NULL; // Points to the next process that should run
 
@@ -847,7 +896,11 @@ static void DebugConsole(char* format, ...)
 /* there is no I/O yet, so return false. */
 int check_io_scheduler()
 {
-    checkKernelMode();
+    if (!checkKernelMode())
+    {
+        console_output(false, "check_io_scheduler(): Not in Kernel Mode.\n");
+        stop(1);
+    }
 
     return false;
 }
@@ -1045,6 +1098,12 @@ static void cleanUpChild(Process* target)
         child->nextSiblingProcess = target->nextSiblingProcess;
     }
 
+    // Free any joined processes the child may still have
+    if (target->numJoined > 0)
+    {
+        freeJoinedProcesses(target);
+    }
+
     // Clear child from the process table
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
@@ -1130,27 +1189,28 @@ static bool hasActiveChild(Process* target)
 }
 
 
-static void freeJoinedProcesses()
+static void freeJoinedProcesses(Process* target)
 {
-    for (int i = 0; i < runningProcess->numJoined; i++)
+    for (int i = 0; i < target->numJoined; i++)
     {
-        Process* target = runningProcess->pJoined[i];
-        target->joined = false;
-        target->endJoinCode = runningProcess->exitCode;
-        unblock(target->pid);
+        Process* joinee = target->pJoined[i];
+        joinee->joined = false;
+        joinee->endJoinCode = target->exitCode;
+        unblock(joinee->pid);
     }
 }
 
 
-static void checkKernelMode()
+static bool checkKernelMode()
 {
     int psr = get_psr() & PSR_KERNEL_MODE;
 
     if (psr != PSR_KERNEL_MODE)
     {
-        console_output(false, "spawn(): Not in Kernel Mode.\n");
-        stop(1);
+        return false;
     }
+
+    return true;
 }
 
 
@@ -1167,6 +1227,8 @@ static bool isScheduler()
 
 static int exitedListPush(Process* target, Process* child)
 {
+    disableInterrupts();
+
     // Input validation
     if (target == NULL)
     {
@@ -1190,12 +1252,16 @@ static int exitedListPush(Process* target, Process* child)
     target->pExited[target->numExited] = child;
     (target->numExited)++;
 
+    enableInterrupts();
+
     return 1;
 }
 
 
 static Process* exitedListPop(Process* target)
 {
+    disableInterrupts();
+
     Process* child = NULL;
 
     // Input validation
@@ -1222,6 +1288,8 @@ static Process* exitedListPop(Process* target)
 
     target->pExited[(target->numExited) - 1] = NULL;
     (target->numExited)--;
+
+    enableInterrupts();
 
     return child;
 }

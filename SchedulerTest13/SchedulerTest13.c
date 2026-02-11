@@ -35,7 +35,7 @@ int SchedulerEntryPoint(void *pArgs)
     console_output(FALSE, "%s: waiting for child process\n", testName);
     kidpid = k_wait(&status);
     console_output(FALSE, "%s: exit status for child %d is %d\n", testName, kidpid, status);
-
+    
     console_output(FALSE, "%s: waiting for child process\n", testName);
     kidpid = k_wait(&status);
 
