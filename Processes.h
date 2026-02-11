@@ -35,6 +35,7 @@ typedef struct _process
 	int			   exitCode;			// The code needed by k_wait() and is input into k_exit()
 	int			   signaled;			// 1 = TRUE, 0 = FALSE
 	int			   startTime;			// The time the process was created, according to the system clock
+	int			   accumulatedTime;		// The total time the process has had on the CPU (i.e. the accumulation of every runTime)
 	int			   runTime;				// The start of the process' current run time. This resets everytime this process is set as the active process.
 	int			   numChildren;			// The number of active children processes this process has
 	int			   numExited;			// The number of exited children waiting to be cleaned up

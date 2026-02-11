@@ -51,12 +51,11 @@ static void cleanUpChild(Process* target);
 static void addJoinedProc(Process* target);
 static void clock_handler(char* deviceName, uint8_t command, uint32_t status);
 static void time_slice();
-static int get_start_time();
 static bool isJoined(Process* target);
 static bool hasChild(Process* target);
 static bool hasActiveChild(Process* target);
-static void freeJoinedProcesses();
-static bool checkKernelMode();
+static void freeJoinedProcesses(Process* target);
+bool checkKernelMode();
 static bool isScheduler();
 static int exitedListPush(Process* target, Process* child);
 static Process* exitedListPop(Process* target);
@@ -221,13 +220,14 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     /* Setup the entry in the process table. */
     strcpy(pNewProc->name, name);
     pNewProc->pid = nextPid;
-    nextPid++;  // Increment Pid counter
+    nextPid++;  
     pNewProc->entryPoint = entryPoint;
     pNewProc->priority = priority;
     pNewProc->stacksize = stacksize;
     pNewProc->status = READY;
     pNewProc->exitCode = 0;
     pNewProc->signaled = 0;
+    pNewProc->accumulatedTime = 0;
     pNewProc->runTime = 0;
     pNewProc->numChildren = 0;
 
@@ -238,10 +238,11 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     }
 
     
-    // If there is a parent process, link the parent and this process to each other.
+    // If there is a parent process, link the parent and this process to each other, and 
+    // increment parent's children counter.
     if (runningProcess != NULL)
     {
-        if (!hasChild(runningProcess))
+        if (!hasChild(runningProcess)) 
         {
             runningProcess->pChildren = pNewProc;
         }
@@ -341,12 +342,14 @@ int k_wait(int* code)
     Process* child;
 
     // Case 1: Process has no children
+    // Return error code
     if (runningProcess->pChildren == 0) 
     {
         return -1;
     }
 
     // Case 2: a child has already exited
+    // Gather exit information from child, clean up the child, and return
     if (runningProcess->numExited > 0)
     {
         child = exitedListPop(runningProcess);
@@ -357,6 +360,8 @@ int k_wait(int* code)
     }
 
     // Case 3: no child has exited yet and this process must wait
+    // Block and wait for signal from a child, then
+    // Gather exit information from child, clean up the child, check to see if signaled, and return
 
     block(BLOCKED); // Block the parent and wait for control to be returned
 
@@ -402,7 +407,8 @@ void k_exit(int code)
         stop(1);
     }
 
-    if (signaled()) // Signaled while exiting, overwrite error code -5
+    // Check to see if this process has been signaled and set its exit code accordingly
+    if (signaled()) 
     {
         runningProcess->exitCode = -5;
     }
@@ -419,7 +425,8 @@ void k_exit(int code)
         exitedListPush(runningProcess->pParent, runningProcess);
     }
 
-    // If the process has a blocked, unjoined parent, unblock it
+    // If the process has a blocked and unjoined parent, then unblock it
+    // If this process has joined processees, the parent will free them
     if (runningProcess->pParent != NULL && 
         runningProcess->pParent->status >= BLOCKED &&
         !isJoined(runningProcess->pParent)) 
@@ -450,7 +457,7 @@ void k_exit(int code)
 
    Parameters - Signal to send
 
-   Returns -
+   Returns - 0 if successful or 1 if signaled
 *************************************************************************/
 int k_kill(int pid, int signal)
 {
@@ -462,12 +469,14 @@ int k_kill(int pid, int signal)
 
     Process* target = NULL;
 
+    // Input validation
     if (signal != SIG_TERM)
     {
         console_output(debugFlag, "k_kill(): Invalid signal code, closing program.\n");
         stop(1);
     }
 
+    // Find targeted process
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
         if (processTable[i].pid == pid)
@@ -477,12 +486,14 @@ int k_kill(int pid, int signal)
         }
     }
 
+    // Pid does not match an existing process, halt program
     if (target == NULL)
     {
         console_output(debugFlag, "k_kill(): Attempted to signal non-existant process, closing program.\n");
         stop(1);
     }
 
+    // Targeted process has already been signaled
     if (target->signaled)
     {
         return 1;
@@ -494,6 +505,12 @@ int k_kill(int pid, int signal)
 
 /**************************************************************************
    Name - k_getpid
+
+   Purpose - Returns the pid of the currently active process
+
+   Parameters - None
+
+   Returns - Returns the pid of the currently active process
 *************************************************************************/
 int k_getpid()
 {
@@ -508,6 +525,13 @@ int k_getpid()
 
 /**************************************************************************
    Name - k_join
+
+   Purpose - The function waits for the specified process to terminate and retrieves its exit code.
+
+   Parameters - The pid of the target process the active process will join with and the exit code from 
+                the target process after the join has ended. 
+
+   Returns - 0 if successful or -5 if the process was signaled while waiting
 ***************************************************************************/
 int k_join(int pid, int* pChildExitCode)
 {
@@ -517,21 +541,23 @@ int k_join(int pid, int* pChildExitCode)
         stop(1);
     }
 
-    // Input Validation
     Process* target = NULL;
 
+    // Input Validation
     if (k_getpid() == pid)
     {
         console_output(false, "k_join(): Attempted to join process to itself, closing program.\n");
         stop(1);
     }
 
+    
     if (runningProcess->pParent->pid == pid)
     {
         console_output(false, "k_join(): Attempted to join process to its parent, closing program.\n");
         stop(2);
     }
 
+    // Find targeted process
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
         if (processTable[i].pid == pid)
@@ -541,6 +567,7 @@ int k_join(int pid, int* pChildExitCode)
         }
     }
 
+    // Pid does not match an existing process, halt program
     if (target == NULL)
     {
         console_output(false, "k_join(): Attempted to join process to a non-existant process, closing program.\n");
@@ -552,6 +579,7 @@ int k_join(int pid, int* pChildExitCode)
     runningProcess->joined = true;
     block(BLOCKED);
 
+    // Retrieve joined process' exit code
     *pChildExitCode = runningProcess->endJoinCode;
 
     if (signaled())
@@ -564,6 +592,13 @@ int k_join(int pid, int* pChildExitCode)
 
 /**************************************************************************
    Name - unblock
+
+   Purpose - The unblock function returns a blocked process to the ready to run state before handing
+             control back to the dispatcher
+
+   Parameters - The pid of the target process to be unblocked
+
+   Returns - Returns 0 if successful or -1 if the target process is not blocked or target pid is invalid
 *************************************************************************/
 int unblock(int pid)
 {
@@ -573,9 +608,9 @@ int unblock(int pid)
         stop(1);
     }
 
-    // Input validation
     Process* target = NULL;
 
+    // Find targeted process
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
         if (processTable[i].pid == pid)
@@ -585,9 +620,9 @@ int unblock(int pid)
         }
     }
 
+    // Pid does not match an existing process or the process isn't blocked
     if (target == NULL || target->status < BLOCKED) 
     {
-        enableInterrupts();
         return -1;
     }
 
@@ -602,6 +637,14 @@ int unblock(int pid)
 
 /*************************************************************************
    Name - block
+
+   Purpose - This function blocks the calling process and sets the processes status in the process table 
+             to the value specified in block_status. The value of block_status must be greater than 10. 
+             The values of 0-10 are reserved for internal kernel process states.
+
+   Parameters - The block status to be assigned to the blocked process
+
+   Returns - Returns 0 if successful or -5 if the process was signaled while blocked
 *************************************************************************/
 int block(int newStatus)
 {
@@ -611,15 +654,18 @@ int block(int newStatus)
         stop(1);
     }
 
+    // Input validation
     if (newStatus < 10)
     {
         console_output(false, "block(): Attempting to block with a reserved status value, closing program.\n");
         stop(1);
     }
 
+    // Set new status and hand off control to dispatcher
     runningProcess->status = newStatus;
     dispatcher();
 
+    // The process is now unblocked and continues running
     if (signaled())
     {
         return -5;
@@ -630,6 +676,12 @@ int block(int newStatus)
 
 /*************************************************************************
    Name - signaled
+
+   Purpose - Checks if the calling process has been signaled.
+
+   Parameters - None
+
+   Returns - Returns 1 if the process has been signaled, otherwise returns 0
 *************************************************************************/
 int signaled()
 {
@@ -643,6 +695,13 @@ int signaled()
 }
 /*************************************************************************
    Name - readtime
+
+   Purpose - The read_time function returns the amount of time in milliseconds that the current 
+             process has spent on the CPU. 
+
+   Parameters - None
+
+   Returns - Returns the calling process' CPU time
 *************************************************************************/
 int read_time()
 {
@@ -654,7 +713,8 @@ int read_time()
 
     if (runningProcess != NULL)
     {
-        return (read_clock() - runningProcess->runTime) / 1000; // Divide by 1000 to convert from microseconds to milliseconds
+        // Divide by 1000 to convert from microseconds to milliseconds
+        return (read_clock() - runningProcess->runTime) / 1000; 
     }
 
     return 0;
@@ -662,13 +722,30 @@ int read_time()
 
 /*************************************************************************
    Name - readClock
+
+   Purpose - This function returns the current value of the system clock using the THREADS 
+             system_clock function
+
+   Parameters - None
+
+   Returns - The function returns the value of system_clock. 
 *************************************************************************/
 DWORD read_clock()
 {
     return system_clock();
 }
 
+/*************************************************************************
+   Name - display_process_table
 
+   Purpose - This function displays all non-empty processes in the process table. The displayed 
+             information includes the process Id (PID), parent PID, Priority, status, number of 
+             children,  cpu time, and process name.
+
+   Parameters - None
+
+   Returns - None
+*************************************************************************/
 void display_process_table()
 {
     if (!checkKernelMode())
@@ -686,14 +763,22 @@ void display_process_table()
         {
             console_output(0, "%-7d%-10d%-12d%-14s%-13d%-16d%s\n",
                 processTable[i].pid, getParentPid(i), processTable[i].priority, getStatusStr(i),
-                processTable[i].numChildren, getTotalCPUTime(i), processTable[i].name);
+                processTable[i].numChildren, processTable[i].accumulatedTime, processTable[i].name);
         }
     }
 
     console_output(0, "\n");
 }
 
+/*************************************************************************
+   Name - getParentPid
 
+   Purpose - This helper function returns the pid of the target process' parent
+
+   Parameters - The index of the target process within the process table
+
+   Returns - The pid of the parent process or -1 if the target process has no parent
+*************************************************************************/
 static int getParentPid(int index)
 {
     if (processTable[index].pParent == NULL)
@@ -706,7 +791,16 @@ static int getParentPid(int index)
     }
 }
 
+/*************************************************************************
+   Name - getStatusStr
 
+   Purpose - This helper function converts the target process' status code into readable text and
+             returns it.
+
+   Parameters - The index of the target process within the process table
+
+   Returns - The text equivalent of the target process' status code
+*************************************************************************/
 static char* getStatusStr(int index)
 {
     if (processTable[index].status == READY)
@@ -731,12 +825,6 @@ static char* getStatusStr(int index)
     }
 }
 
-
-static int getTotalCPUTime(int index)
-{
-    return read_clock() - processTable[index].startTime;
-}
-
 /**************************************************************************
    Name - dispatcher
 
@@ -755,7 +843,14 @@ void dispatcher()
         stop(1);
     }
 
-    Process* nextProcess = NULL; // Points to the next process that should run
+    // Add to accumulated time for the process
+    if (runningProcess != NULL)
+    {
+        runningProcess->accumulatedTime += read_time();
+    }
+
+    // Points to the next process that should run
+    Process* nextProcess = NULL; 
 
     // No process was running
     if (runningProcess == NULL) 
@@ -814,14 +909,26 @@ void dispatcher()
 static int watchdog(char* dummy)
 {
     DebugConsole("watchdog(): called\n");
+
     while (1)
     {
         check_deadlock();
     }
+
     return 0;
 } 
 
-/* check to determine if deadlock has occurred... */
+/**************************************************************************
+   Name - check_deadlock
+
+   Purpose - This functions checks for deadlock, and if none is found, it ends the program 
+             gracefully. If there is no deadlock, but there are active functions running
+             besides watchdog, the program is halted with an error.
+
+   Parameters - none
+
+   Returns - nothing
+   *************************************************************************/
 static void check_deadlock()
 {
     if (check_io() == 1)
@@ -840,26 +947,36 @@ static void check_deadlock()
     }
 }
 
-/*
- * Disables the interrupts.
- */
+/**************************************************************************
+   Name - disableInterrupts
+
+   Purpose - This functions edits the psr to temporarily disable interrupts, which is necessary when
+             working in critical regions.
+
+   Parameters - none
+
+   Returns - nothing
+   *************************************************************************/
 static inline void disableInterrupts()
 {
-
-    /* We ARE in kernel mode */
-
-
     int psr = get_psr();
 
     psr = psr & ~PSR_INTERRUPTS;
 
     set_psr(psr);
 
-} /* disableInterrupts */
+} 
 
-/*
- * Enabless the interrupts.
- */
+/**************************************************************************
+   Name - enableInterrupts
+
+   Purpose - This functions edits the psr to turn interrupts back on, called after finishing work
+             within critical regions.
+
+   Parameters - none
+
+   Returns - nothing
+   *************************************************************************/
 static inline void enableInterrupts()
 {
     int psr = get_psr();
@@ -868,14 +985,16 @@ static inline void enableInterrupts()
 
     set_psr(psr);
 
-} /* enableInterrupts */
+} 
 
 /**************************************************************************
    Name - DebugConsole
-   Purpose - Prints  the message to the console_output if in debug mode
+
+   Purpose - Prints the message to the console_output if in debug mode
+
    Parameters - format string and va args
+
    Returns - nothing
-   Side Effects -
 *************************************************************************/
 static void DebugConsole(char* format, ...)
 {
@@ -905,15 +1024,13 @@ int check_io_scheduler()
     return false;
 }
 
-
-
 /* NEW FUNCTIONS */
 
 /**************************************************************************
    Name - readyListPush
 
    Purpose - The Process node is added to the end of the priority queue
-        pointed to by target.
+             pointed to by target.
 
    Parameters - target, a pointer to a priority Queue
                 node, a pointed to a node that is to be added to target
@@ -923,6 +1040,7 @@ int check_io_scheduler()
 static int readyListPush(Queue* target, Process* node)
 {
     disableInterrupts();
+
     if (target->size == (MAX_PROCESSES - 1))
     {
         console_output(TRUE, "Could not add Process '%s' to Queue %d, the Queue is full.\n", node->name, target->priority);
@@ -947,6 +1065,7 @@ static int readyListPush(Queue* target, Process* node)
         target->size += 1;
         return target->size;
     }
+
     enableInterrupts();
 }
 
@@ -964,6 +1083,7 @@ static int readyListPush(Queue* target, Process* node)
 static Process* readyListPop(Queue* target)
 {
     disableInterrupts();
+
     Process* node = NULL;
 
     if (target->size == 0)
@@ -986,6 +1106,7 @@ static Process* readyListPop(Queue* target)
     }
 
     enableInterrupts();
+
     return node;
 }
 
@@ -1002,14 +1123,17 @@ static Process* readyListPop(Queue* target)
    *************************************************************************/
 static int boolAvailableProcesses()
 {
-    for (int i = 1; i < NUM_PRIORITIES; i++) // Skip lowest priority
+    // Skip lowest priority
+    for (int i = 1; i < NUM_PRIORITIES; i++) 
     {
         if (readyLists[i].size > 0)
         {
             return true;
         }
     }
-    if (readyLists[0].size > 1) // Watchdog should be running
+
+    // Watchdog should be running, so don't count it
+    if (readyLists[0].size > 1) 
     {
         return true;
     }
@@ -1132,7 +1256,20 @@ static void cleanUpChild(Process* target)
     }
 }
 
+/**************************************************************************
+   Name - addJoinedProc
 
+   Purpose - Adds the currently active process to target's list of joined processes
+
+   Parameters - The target process who the active process joins with
+
+   Returns - none
+
+   Note - This functionality works under the assumption that a process will only free its joined
+          processes once, specifically when it is exiting or being cleaned up by its parent. This
+          functionality may break if a process can free its joined processes multiple times in its
+          lifetime. 
+   *************************************************************************/
 static void addJoinedProc(Process* target)
 {
     // Add the current Process' to target's joined list and increment joined count
@@ -1140,12 +1277,31 @@ static void addJoinedProc(Process* target)
     (target->numJoined)++;
 }
 
+/**************************************************************************
+   Name - clock_handler
+
+   Purpose - This function is used by the interrupt handler to create time slices for processes
+             and facilitate the round-robin with priority system for CPU time.
+
+   Note - Not sure exactly what the parameters are used for, since a lot of the interrupt handler is
+          hidden within libraries we can't access. Assume the parameters are needed, even if they
+          aren't used within the function.
+   *************************************************************************/
 static void clock_handler(char* deviceName, uint8_t command, uint32_t status)
 {
     time_slice();
 }
 
+/**************************************************************************
+   Name - time_slice
 
+   Purpose - This function checks to see if the active running process has used up its alloted CPU
+             time. If it has, the dispatcher is called, otherwise, the process continues running.
+
+   Parameters - none
+
+   Returns - none
+   *************************************************************************/
 void time_slice()
 {
     if (read_time() >= 80)
@@ -1154,19 +1310,32 @@ void time_slice()
     }
 }
 
+/**************************************************************************
+   Name - isJoined
 
-static int get_start_time()
-{
-    return runningProcess->startTime;
-}
+   Purpose - This function checks if the target process has been joined with another
 
+   Parameters - the target process to check
 
+   Returns - true if target is joined, otherwise returns false
+   *************************************************************************/
 static bool isJoined(Process* target)
 {
     return target->joined;
 }
 
+/**************************************************************************
+   Name - hasChild
 
+   Purpose - This function checks if the target process has any children, including ones waiting
+             to be cleaned up.
+
+   Parameters - the target process to check
+
+   Returns - true if target has children, otherwise returns false
+
+   Note - This looks similar to hasActiveChild, but IT IS different!
+   *************************************************************************/
 static bool hasChild(Process* target)
 {
     if (target->pChildren != NULL)
@@ -1177,7 +1346,18 @@ static bool hasChild(Process* target)
     return false;
 }
 
+/**************************************************************************
+   Name - hasActiveChild
 
+   Purpose - This function checks if the target process has any children who are not waiting to be
+             cleaned up.
+
+   Parameters - the target process to check
+
+   Returns - true if target is joined, otherwise returns false
+
+   Note - This looks similar to hasChild, but IT IS different!
+   *************************************************************************/
 static bool hasActiveChild(Process* target)
 {
     if (target->numChildren > 0)
@@ -1188,7 +1368,15 @@ static bool hasActiveChild(Process* target)
     return false;
 }
 
+/**************************************************************************
+   Name - isJoined
 
+   Purpose - This function checks if the target process has been joined with another
+
+   Parameters - the target process to check
+
+   Returns - true if target is joined, otherwise returns false
+   *************************************************************************/
 static void freeJoinedProcesses(Process* target)
 {
     for (int i = 0; i < target->numJoined; i++)
@@ -1200,8 +1388,16 @@ static void freeJoinedProcesses(Process* target)
     }
 }
 
+/**************************************************************************
+   Name - checkKernelMode
 
-static bool checkKernelMode()
+   Purpose - This function checks the psr to ensure the OS is in kernel mode and not user mode
+
+   Parameters - None
+
+   Returns - true if in kernel mode, otherwise returns false
+   *************************************************************************/
+bool checkKernelMode()
 {
     int psr = get_psr() & PSR_KERNEL_MODE;
 
@@ -1213,9 +1409,18 @@ static bool checkKernelMode()
     return true;
 }
 
+/**************************************************************************
+   Name - isScheduler
 
+   Purpose - This function checks if the currently active process is the Scheduler
+
+   Parameters - None
+
+   Returns - true if the current process is the Scheduler, otherwise returns false
+   *************************************************************************/
 static bool isScheduler()
 {
+    // 2 = Scheduler pid
     if (runningProcess->pid == 2)
     {
         return true;
@@ -1224,7 +1429,16 @@ static bool isScheduler()
     return false;
 }
 
+/**************************************************************************
+   Name - exitedListPush
 
+   Purpose - This function adds the child process to the end of target process' list of exiting 
+             children. The list is a FIFO list.
+
+   Parameters - the child process that is exiting and the target process that is the parent of child
+
+   Returns - returns 1 if successful or 0 if an error occurs
+   *************************************************************************/
 static int exitedListPush(Process* target, Process* child)
 {
     disableInterrupts();
@@ -1257,7 +1471,16 @@ static int exitedListPush(Process* target, Process* child)
     return 1;
 }
 
+/**************************************************************************
+   Name - exitedListPop
 
+   Purpose - This function removes the first exiting process in target's exiting children list and
+             returns it. The list is a FIFO list.
+
+   Parameters - the target process to remove an exiting child from
+
+   Returns - a pointer to the exiting child process or NULL if an error occurred
+   *************************************************************************/
 static Process* exitedListPop(Process* target)
 {
     disableInterrupts();
