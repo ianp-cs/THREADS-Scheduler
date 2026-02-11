@@ -382,7 +382,6 @@ int k_wait(int* code)
     if (childFound != NULL)
     {
         cleanUpChild(childFound);
-        return result;
     }
 
     if (signaled()) // Signaled while waiting, return error code -5
@@ -603,7 +602,7 @@ int block(int newStatus)
 
     if (newStatus < 10)
     {
-        console_output(debugFlag, "block(): Blocking status code is NOT greater than 10, closing program.\n");
+        console_output(false, "block(): Attempting to block with a reserved status value, closing program.\n");
         stop(1);
     }
 
@@ -636,7 +635,7 @@ int read_time()
 
     if (runningProcess != NULL)
     {
-        return read_clock() - runningProcess->runTime;
+        return (read_clock() - runningProcess->runTime) / 1000; // Divide by 1000 to convert from microseconds to milliseconds
     }
 
     return 0;
@@ -1092,7 +1091,7 @@ static void cleanUpChild(Process* target)
             processTable[i].exitCode = 0;
             processTable[i].signaled = 0;
             processTable[i].startTime = 0;
-            processTable[i].runTime = 0;
+            processTable[i].runTime = read_clock();
             processTable[i].numChildren = 0;
         }
     }
@@ -1114,7 +1113,7 @@ static void clock_handler(char* deviceName, uint8_t command, uint32_t status)
 
 void time_slice()
 {
-    if (read_time() >= 80000)
+    if (read_time() >= 80)
     {
         dispatcher();
     }
