@@ -42,8 +42,8 @@ static char* getStatusStr(int index);  // New function, placed here for organiza
 static int getTotalCPUTime(int index); // New function, placed here for organizational purposes
 
 /* New functions */
-static int push(Queue* target, Process* node);
-static Process* pop(Queue* target);
+static int readyListPush(Queue* target, Process* node);
+static Process* readyListPop(Queue* target);
 static int boolAvailableProcesses();
 static int isHighestPriorityProcess(Process* target);
 static Process* getHighestPriorityProcess();
@@ -58,6 +58,8 @@ static bool hasActiveChild(Process* target);
 static void freeJoinedProcesses();
 static void checkKernelMode();
 static bool isScheduler();
+static int exitedListPush(Process* target, Process* child);
+static Process* exitedListPop(Process* target);
 
 /* DO NOT REMOVE */
 extern int SchedulerEntryPoint(void* pArgs);
@@ -256,7 +258,7 @@ int k_spawn(char* name, int (*entryPoint)(void *), void* arg, int stacksize, int
     }
 
     /* Add the process to the ready list. */
-    if (push(&readyLists[pNewProc->priority], pNewProc) == 0)
+    if (readyListPush(&readyLists[pNewProc->priority], pNewProc) == 0)
     {
         return -5;
     }
@@ -328,60 +330,34 @@ int k_wait(int* code)
     checkKernelMode();
     
     int result = 0;
-    Process* child = runningProcess->pChildren;
-    Process* childFound = NULL;
-    int highestPriority = -1; // The priority of the highest priority child 
+    Process* child;
 
     // Case 1: Process has no children
-    if (child == NULL) 
+    if (runningProcess->pChildren == 0) 
     {
         return -1;
     }
-    // End case 1
 
     // Case 2: a child has already exited
-    while (child != NULL) 
+    while (runningProcess->numExited > 0)
     {
-        if (child->status == QUIT && child->priority > highestPriority) // Find the next child with highest priority
-        {
-            *code = child->exitCode;
-            result = child->pid;
-            highestPriority = child->priority;
-            childFound = child;
-        }
-
-        child = child->nextSiblingProcess; // Set new head of children linked list for the parent
-    }
-
-    if (childFound != NULL)
-    {
-        cleanUpChild(childFound);
+        child = exitedListPop(runningProcess);
+        result = child->pid;
+        *code = child->exitCode;
+        cleanUpChild(child);
         return result;
     }
-    // End Case 2
 
     // Case 3: no child has exited yet and this process must wait
 
-    child = runningProcess->pChildren; // Reset to head of children linked list
-
     block(BLOCKED); // Block the parent and wait for control to be returned
 
-    while (child != NULL)
+    while (runningProcess->numExited > 0)
     {
-        if (child->status == QUIT && child->priority > highestPriority) // Find the next child with highest priority
-        {
-            *code = child->exitCode;
-            result = child->pid;
-            highestPriority = child->priority;
-            childFound = child;
-        }
-
-        child = child->nextSiblingProcess; // Set new head of children linked list for the parent
-    }
-
-    if (childFound != NULL)
-    {
-        cleanUpChild(childFound);
+        child = exitedListPop(runningProcess);
+        result = child->pid;
+        *code = child->exitCode;
+        cleanUpChild(child);
     }
 
     if (signaled()) // Signaled while waiting, return error code -5
@@ -390,7 +366,6 @@ int k_wait(int* code)
     }
 
     return result;
-    // End Case 3
 } 
 
 /**************************************************************************
@@ -429,6 +404,7 @@ void k_exit(int code)
     {
         (runningProcess->pParent->numChildren)--;
         runningProcess->status = QUIT;
+        exitedListPush(runningProcess->pParent, runningProcess);
     }
 
     // If the process has a blocked, unjoined parent, unblock it
@@ -589,7 +565,7 @@ int unblock(int pid)
 
     // Unblock Process
     target->status = READY;
-    push(&readyLists[target->priority], target);
+    readyListPush(&readyLists[target->priority], target);
     return 0;
 }
 
@@ -755,7 +731,7 @@ void dispatcher()
 
         // Add previous process back into the ready lists
         previousProcess->status = READY;
-        push(&readyLists[previousProcess->priority], previousProcess);
+        readyListPush(&readyLists[previousProcess->priority], previousProcess);
 
         nextProcess = getHighestPriorityProcess();
     }
@@ -881,7 +857,7 @@ int check_io_scheduler()
 /* NEW FUNCTIONS */
 
 /**************************************************************************
-   Name - push
+   Name - readyListPush
 
    Purpose - The Process node is added to the end of the priority queue
         pointed to by target.
@@ -891,7 +867,7 @@ int check_io_scheduler()
 
    Returns - -1 if an error occurs, otherwise returns the new size of target
    *************************************************************************/
-static int push(Queue* target, Process* node)
+static int readyListPush(Queue* target, Process* node)
 {
     disableInterrupts();
     if (target->size == (MAX_PROCESSES - 1))
@@ -922,24 +898,24 @@ static int push(Queue* target, Process* node)
 }
 
 /**************************************************************************
-   Name - pop
+   Name - readyListPop
 
    Purpose - Retrieves the first node of target priority Queue, removes it
         from the Queue, and returns it.
 
    Parameters - target, a pointer to a priority Queue
 
-   Returns - NULL if an error occurs, otherwise returns the Process popped
+   Returns - NULL if an error occurs, otherwise returns the Process readyListPopped
         from target
    *************************************************************************/
-static Process* pop(Queue* target)
+static Process* readyListPop(Queue* target)
 {
     disableInterrupts();
     Process* node = NULL;
 
     if (target->size == 0)
     {
-        console_output(TRUE, "Could not pop from Queue %d, the Queue is empty.\n", target->priority);
+        console_output(TRUE, "Could not readyListPop from Queue %d, the Queue is empty.\n", target->priority);
     }
     else if (target->size == 1)
     {
@@ -1017,7 +993,7 @@ static int isHighestPriorityProcess(Process* target)
    Name - getHighestPriorityProcess
 
    Purpose - Each priority Queue is searched for the highest priority Process,
-        pops it from its Queue, and returns it.
+        readyListPops it from its Queue, and returns it.
 
    Parameters - none
 
@@ -1030,7 +1006,7 @@ static Process* getHighestPriorityProcess()
     {
         if (readyLists[i].size > 0)
         {
-            return pop(&readyLists[i]);
+            return readyListPop(&readyLists[i]);
         }
     }
 
@@ -1186,4 +1162,66 @@ static bool isScheduler()
     }
 
     return false;
+}
+
+
+static int exitedListPush(Process* target, Process* child)
+{
+    // Input validation
+    if (target == NULL)
+    {
+        console_output(false, "exitedListPush(): Target points to NULL.\n");
+        return 0;
+    }
+
+    if (child == NULL)
+    {
+        console_output(false, "exitedListPush(): Child points to NULL.\n");
+        return 0;
+    }
+
+    if (target->numExited == MAX_PROCESSES)
+    {
+        console_output(false, "exitedListPush(): Exited list for this process is full.\n");
+        return 0;
+    }
+
+    // Add child to list and increment exited children counter
+    target->pExited[target->numExited] = child;
+    (target->numExited)++;
+
+    return 1;
+}
+
+
+static Process* exitedListPop(Process* target)
+{
+    Process* child = NULL;
+
+    // Input validation
+    if (target == NULL)
+    {
+        console_output(false, "exitedListPop(): Target points to NULL.\n");
+        return NULL;
+    }
+
+    if (target->numExited == 0)
+    {
+        console_output(false, "exitedListPop(): Target has no children to pop.\n");
+        return NULL;
+    }
+
+    // Get first child in list
+    child = target->pExited[0];
+
+    // Shift list to the left and decrement exited children counter
+    for (int i = 0; i < (target->numExited) - 1; i++)
+    {
+        target->pExited[i] = target->pExited[i + 1];
+    }
+
+    target->pExited[(target->numExited) - 1] = NULL;
+    (target->numExited)--;
+
+    return child;
 }
